@@ -1,0 +1,362 @@
+---
+title: "BUDT758T_FinalProject"
+author: "Jacob Mackoff, Aviva Mehta, Shiv Jethi, Jarrar Haider, Penfeng (Jonathan) Ye"
+date: "2023-05-13"
+output: pdf_document
+---
+###### FINAL PROJECT
+##### BUDT758Z: 
+
+# Data Preparation and Cleaning
+```{r}
+# Import relevant libraries 
+library(readxl)
+library(class)
+library(naivebayes)
+
+# Import data
+dat<-read.csv("BUDT758T_Project_Data.csv")
+
+# Factor and relevel necessary variables 
+dat$classification<-as.factor(dat$classification)
+dat$classification <- relevel(dat$classification, ref = "spammer")
+str(dat)
+
+# Remove "Number of Retweets"
+dat <- subset(dat, select = -no_retweets)
+
+# Filter observations by Account Age
+dat <- dat[dat$Account_age <= 5110,]
+
+# Set seed
+set.seed(123)
+
+# Split the data 
+index <- sample(nrow(dat), 0.6*nrow(dat))
+train <- data.frame(dat[index,])
+dataremain<- data.frame(dat[-index,])
+index1 <- sample(nrow(dataremain), 0.5*nrow(dataremain))
+validation <- data.frame(dataremain[index1, ])
+test <- data.frame(dataremain[-index1, ])
+```
+
+## Model 1: Logistic Regression 
+```{r}
+# Build the model
+logistic_model <- glm(classification~., data = train, family = "binomial")
+summary(logistic_model)
+
+# Obtain predicted values
+predicted_values <- predict(logistic_model, test, type="response")
+binary_predictions <- ifelse(predicted_values > 0.5, "spammer", "non-spammer")
+binary_predictions<- factor(binary_predictions, levels=c("non-spammer", "spammer"))
+
+# Calculate accuracy
+CM_test_log<- confusionMatrix(binary_predictions, test$classification, positive = "spammer")
+CM_test_log
+
+
+# Calculate AUC
+library(pROC)
+cat("AUC of Logistic Regression model = ", auc(test$classification, predicted_values), "\n")
+```
+
+## Model 2: Naive Bayes
+```{r}
+# Create model
+naive_model <- naive_bayes(classification~., data = train)
+summary(naive_model)
+
+# Obtain predicted values
+predicted_naive <- predict(naive_model, newdata = test[,-13])
+
+# Calculate accuracy
+accuracy_naive <- mean(predicted_naive == test$classification)
+accuracy_naive
+
+cat("AUC of Naive Bayes model = ", auc(test$classification, predicted_naive), "\n")
+```
+
+## Model 3: KNN
+```{r}
+#Import Data to be Normalized 
+dat1<-BUDT758T_Project_Data
+
+# Remove "Number of Observations" and "Number of Retweets"
+dat1 <- subset(dat1, select = -no_retweets)
+dat1$classification<-as.factor(dat1$classification)
+dat1$classification <- relevel(dat1$classification, ref = "spammer")
+
+# Filter observations by Account Age
+dat1 <- dat1[dat1$Account_age <= 5110,]
+# Normalize each variable
+fun <- function(x){ 
+  a <- mean(x) 
+  b <- sd(x) 
+  (x - a)/(b) 
+} 
+
+dat1[,1:11] <- apply(dat1[,1:11], 2, fun)
+
+#Splitting Dataset 
+set.seed(123)
+index1 <- sample(nrow(dat1), 0.6*nrow(dat1))
+train_norm <- data.frame(dat1[index1,])
+dataremain1<- data.frame(dat1[-index1,])
+index2 <- sample(nrow(dataremain1), 0.5*nrow(dataremain1))
+validation_norm <- data.frame(dataremain1[index2, ])
+test_norm <- data.frame(dataremain1[-index2, ])
+rm(dataremain1)
+
+train_input <- as.matrix(train_norm[,-12])
+train_output <- as.vector(train_norm[,12])
+validate_input <- as.matrix(validation_norm[,-12])
+test_input <- as.matrix(test_norm[,-12])
+
+#Max k is 20
+kmax <- 20
+ER1 <- rep(0,kmax)
+ER2 <- rep(0,kmax)
+ER3 <- rep(0,kmax)
+
+#Predictions, confusion matrices, error rates
+set.seed(123)
+for (i in 1:kmax){
+  prediction_train <- knn(train_input, train_input, train_output, k=i)
+  prediction_val <- knn(train_input, validate_input, train_output, k=i)
+  prediction_test <- knn(train_input, test_input, train_output, k=i)
+  
+  CM1 <- table(prediction_train, train_norm$classification)
+  ER1[i] <- (CM1[2,2] + CM1[1,1])/sum(CM1)
+  CM2 <- table(prediction_val, validation_norm$classification)
+  ER2[i] <- (CM2[2,2] + CM2[1,1])/sum(CM2)
+  CM3 <- table(prediction_test, test_norm$classification)
+  ER3[i] <- (CM3[2,2] + CM3[1,1])/sum(CM3)
+}
+
+#Plot training and validation error rates
+plot(c(1,kmax),c(0,1), type= "n", xlab="k",ylab="Error Rate")
+lines(ER1,col="red")
+lines(ER2,col="blue")
+legend(15, 0.5, c("Training","Validation"),lty=c(1,1), col=c("red","blue"))
+
+#Find Minimum Validation Error
+z <- which.min(ER2)
+cat("Minimum Validation Error k:", z)
+points(z,ER2[z],col="red",cex=2,pch=20)
+
+#Create predictions for train, test, validation
+prediction <- knn(train_input, train_input,train_output, k=z)
+prediction2 <- knn(train_input, validate_input,train_output, k=z)
+prediction3 <- knn(train_input, test_input,train_output, k=z, prob=T) #added prob=T in order to get probabilities
+
+#Accuracy Rate 
+1 - ER3[z]
+
+#calculate AUC
+library(pROC)
+predicted.probability <- attr(prediction3, "prob")
+predicted.probability <- ifelse(prediction3 =="spammer", predicted.probability, 1-predicted.probability)
+cat("AUC of KNN model = ", auc(test$classification, predicted.probability), "\n")
+```
+
+##Model 4: Classification Trees
+```{r}
+library(tree)
+tree.tweets=tree(classification~.,train)
+summary(tree.tweets)
+
+#Computing the training error
+Prediction=predict(tree.tweets, train,type="class")
+Actual = train$classification
+# The confusion matrix and error rate
+CM = table(Actual, Prediction)
+(Train_Acc = (CM[1,1]+CM[2,2])/sum(CM))
+Train_Error = 1 - Train_Acc
+(Train_Error)
+
+#Computing the test error (where dftest is 20% split)
+Prediction.test=predict(tree.tweets, test,type="class")
+Actual.test = test$classification
+# The confusion matrix and error rate
+CM2 = table(Actual.test,Prediction.test)
+(Test_Acc = (CM2[1,1]+CM2[2,2])/sum(CM2))
+Test_Error = 1 - Test_Acc
+(Test_Error)
+
+#Pruning the Tree
+library(tree)
+set.seed(123)
+cv.tweets=cv.tree(tree.tweets, FUN=prune.misclass)
+names(cv.tweets)
+
+#plot(cv.tweets$size,cv.tweets$dev,type="b")
+(i = which.min(cv.tweets$dev))
+(z = cv.tweets$size[i])
+
+#which.min(cv.tweets$size)```
+#Now prune the tree 
+prune.tweets=prune.misclass(tree.tweets,best=z)
+plot(prune.tweets)
+text(prune.tweets, pretty=0)
+
+#Test accuracy on the pruned rate
+Prediction=predict(prune.tweets, test,type="class")
+CM3 = table(Actual.test,Prediction)
+(Acc = (CM3[1,1]+CM3[2,2])/sum(CM3))
+
+
+#AUC 
+predicted.probability <- predict(prune.tweets, test, type="vector")
+prob <- predicted.probability[,2]
+cat("AUC of CLASSIFICATION TREE model = ", auc(test$classification, prob), "\n")
+```
+
+##Model 5: Bagging
+```{r}
+library(randomForest)
+library(ROCR)
+
+###########Bagging (Random forest with mtry=p)#######################
+set.seed(123)
+bag1<- randomForest(classification~., mtry=11, importance=TRUE, n.tree=1000, data=train)
+bag1
+importance(bag1)
+
+#Confusion Matrix for Train Data 
+predtrainbag1<- predict(bag1, train)
+CM_train_bag1<- confusionMatrix(predtrainbag1, train$classification, positive = "spammer")
+CM_train_bag1
+#Accuracy = 1
+#Sensitivity = 1 
+#Specificity = 1
+
+#Confusion Matrix for Test Data
+predtestbag1<- predict(bag1, test)
+CM_test_bag1<- confusionMatrix(predtestbag1, test$classification, positive = "spammer")
+CM_test_bag1
+#accuracy = .8754
+#Sensitivity = .7537
+#Specificity = .9425
+
+#Error Rates Plotted 
+plot(bag1)
+
+#ROC Curve of Train and Test for Bag 1 
+
+#Bagging with Different Parameters
+
+bag2<- randomForest(classification~., mtry=11, importance=TRUE, n.tree=5000, data=train)
+bag2
+importance(bag2)
+
+#Confusion Matrix for Train Data 
+predtrainbag2<- predict(bag2, train)
+CM_train_bag2<- confusionMatrix(predtrainbag2, train$classification, positive = "spammer")
+CM_train_bag2
+#Accuracy = 1
+#Sensitivity = 1 
+#Specificity = 1
+
+#Confusion Matrix for Test Data
+predtestbag2<- predict(bag2, test)
+CM_test_bag2<- confusionMatrix(predtestbag2, test$classification, positive = "spammer")
+CM_test_bag2
+#accuracy = .8781
+#Sensitivity = .7587
+#Specificity = .9438
+
+#Error Rates Plotted 
+plot(bag2)
+
+#Computing AUC 
+predicted.probability <- predict(bag2, test, type="prob")
+#roc.test <- roc(test$classification, predicted.probability[,2])
+#auc(roc.test)
+prob <- predicted.probability[,2]
+cat("AUC of BAGGING model = ", auc(test$classification, prob), "\n")
+```
+
+
+##Model 6: Random Forest 
+```{r}
+#Random Forest With 1000 trees and mtry = 4 
+rf1<- randomForest(classification~., mtry=4, importance=TRUE, n.tree=1000, data=train)
+rf1
+importance(rf1)
+
+#Confusion Matrix for Train Data 
+predtrainrf1<- predict(rf1, train)
+CM_train_rf1<- confusionMatrix(predtrainrf1, train$classification, positive = "spammer")
+CM_train_rf1
+
+
+#Confusion Matrix for Test Data
+predtestrf1<- predict(rf1, test)
+CM_test_rf1<- confusionMatrix(predtestrf1, test$classification, positive = "spammer")
+CM_test_rf1
+
+
+#Error Rates Plotted 
+plot(rf1)
+
+#ROC Curve of Train and Test for Bag 1 
+
+#RF with Different Parameters
+rf2<- randomForest(classification~., mtry=3, importance=TRUE, n.tree=1000, data=train)
+rf2
+importance(rf2)
+
+#Confusion Matrix for Train Data 
+predtrainrf2<- predict(rf2, train)
+CM_train_rf2<- confusionMatrix(predtrainrf2, train$classification, positive = "spammer")
+CM_train_rf2
+
+#Confusion Matrix for Test Data
+predtestrf2<- predict(rf2, test)
+CM_test_rf2<- confusionMatrix(predtestrf2, test$classification, positive = "spammer")
+CM_test_rf2
+
+#Error Rates Plotted 
+plot(rf2)
+
+#AUC of RF2
+library(pROC)
+#predtrainrf1<- predict(rf1, train, type="prob")
+predicted.probability <- predict(rf2, test, type="prob")
+roc.test <- roc(test$classification, predicted.probability[,2])
+auc(roc.test)
+```
+
+## Model 7: Boosting
+```{r}
+library(gbm)
+set.seed(123)
+
+train$class<- ifelse(train$classification =="spammer",1,0)
+test$class<- ifelse(test$classification=="spammer",1,0)
+
+boost.tweets = gbm(class~.-classification, 
+                   data=train, 
+                   distribution="bernoulli",
+                   n.trees=5000,
+                   interaction.depth=4
+                   )
+
+#summary(boost.tweets)
+yhat.tweets <- predict(boost.tweets, newdata=test, n.trees=5000, distribution="bernoulli", type="response")
+
+
+Actual.test <- test$class
+predicted <- ifelse(yhat.tweets>=0.5,1,0)
+CM4 = table(predicted, Actual.test)
+(Acc = (CM4[1,1]+CM4[2,2])/sum(CM4))
+
+#Finding AUC 
+
+cat("AUC of BOOSTING model = ", auc(Actual.test, predicted), "\n")
+
+train$class<-NULL 
+test$class<-NULL
+```
+
